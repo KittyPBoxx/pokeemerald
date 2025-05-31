@@ -29,14 +29,17 @@
 #include "constants/mauville_old_man.h"
 #include "constants/trainer_types.h"
 #include "constants/union_room.h"
+#include "script.h"
 
 // this file was known as evobjmv.c in Game Freak's original source
 
 enum {
     MOVE_SPEED_NORMAL, // walking
+    MOVE_SPEED_NORMAL_2,
     MOVE_SPEED_FAST_1, // running / surfing / sliding (ice tile)
     MOVE_SPEED_FAST_2, // water current / acro bike
     MOVE_SPEED_FASTER, // mach bike's max speed
+    MOVE_SPEED_FASTER_2,
     MOVE_SPEED_FASTEST,
 };
 
@@ -165,6 +168,8 @@ static void DestroyLevitateMovementTask(u8);
 static bool8 NpcTakeStep(struct Sprite *);
 static bool8 IsElevationMismatchAt(u8, s16, s16);
 static bool8 AreElevationsCompatible(u8, u8);
+static u8 GetNormalizedSpeed(struct ObjectEvent *objectEvent, u8 direction, u8 speed);
+static inline u8 IsSpeedNormalized(struct ObjectEvent *objectEvent, u8 direction, u8 newSpeed);
 
 static const struct SpriteFrameImage sPicTable_PechaBerryTree[];
 
@@ -5226,7 +5231,7 @@ void InitNpcForMovement(struct ObjectEvent *objectEvent, struct Sprite *sprite, 
     SetObjectEventDirection(objectEvent, direction);
     MoveCoords(direction, &x, &y);
     ShiftObjectEventCoords(objectEvent, x, y);
-    SetSpriteDataForNormalStep(sprite, direction, speed);
+    SetSpriteDataForNormalStep(sprite, direction, GetNormalizedSpeed(objectEvent, direction, speed));
     sprite->animPaused = FALSE;
 
     if (sLockedAnimObjectEvents != NULL && FindLockedObjectEventIndex(objectEvent) != OBJECT_EVENTS_COUNT)
@@ -5251,17 +5256,31 @@ static void StartRunningAnim(struct ObjectEvent *objectEvent, struct Sprite *spr
     SetStepAnimHandleAlternation(objectEvent, sprite, GetRunningDirectionAnimNum(objectEvent->facingDirection));
 }
 
+#define sDir    data[3]
+#define sSpeed  data[4]
+
 static bool8 UpdateMovementNormal(struct ObjectEvent *objectEvent, struct Sprite *sprite)
 {
     if (NpcTakeStep(sprite))
     {
         ShiftStillObjectEventCoords(objectEvent);
         objectEvent->triggerGroundEffectsOnStop = TRUE;
-        sprite->animPaused = TRUE;
+        if (IsSpeedNormalized(objectEvent, sprite->sDir, sprite->sSpeed))
+        {
+            sprite->animPaused = FALSE;
+            sprite->animDelayCounter = max(0, sprite->animDelayCounter - 1);
+        }
+        else 
+        {
+            sprite->animPaused = TRUE;
+        }
         return TRUE;
     }
     return FALSE;
 }
+
+#undef sDir
+#undef sSpeed
 
 static void InitNpcForWalkSlow(struct ObjectEvent *objectEvent, struct Sprite *sprite, u8 direction)
 {
@@ -5295,6 +5314,30 @@ static bool8 UpdateWalkSlow(struct ObjectEvent *objectEvent, struct Sprite *spri
         return TRUE;
     }
     return FALSE;
+}
+
+#define IS_DIAGONAL(dir) ((dir) > DIR_EAST)
+
+static u8 GetNormalizedSpeed(struct ObjectEvent *objectEvent, u8 direction, u8 speed)
+{
+    if (!objectEvent->isPlayer || ArePlayerFieldControlsLocked())
+    {
+        return speed;
+    }
+
+    if (IS_DIAGONAL(direction)) 
+    {
+        return speed - (speed == MOVE_SPEED_FASTEST);
+    } 
+    else
+    {
+        return speed + (speed != MOVE_SPEED_FASTEST);
+    }
+}
+
+static inline bool8 IsSpeedNormalized(struct ObjectEvent *objectEvent, u8 direction, u8 speed)
+{
+    return GetNormalizedSpeed(objectEvent, direction, speed) != speed;
 }
 
 bool8 MovementAction_WalkSlowNorthwest_Step0(struct ObjectEvent *objectEvent, struct Sprite *sprite)
@@ -8402,6 +8445,12 @@ static void Step4(struct Sprite *sprite, u8 dir)
     sprite->y += 4 * (u16) sDirectionToVectors[dir].y;
 }
 
+static void Step6(struct Sprite *sprite, u8 dir)
+{
+    sprite->x += 6 * (u16) sDirectionToVectors[dir].x;
+    sprite->y += 6 * (u16) sDirectionToVectors[dir].y;
+}
+
 static void Step8(struct Sprite *sprite, u8 dir)
 {
     sprite->x += 8 * (u16) sDirectionToVectors[dir].x;
@@ -8439,6 +8488,21 @@ static const SpriteStepFunc sStep1Funcs[] = {
     Step1,
 };
 
+static const SpriteStepFunc sStep1_5Funcs[] = {
+    Step1,
+    Step2,
+    Step1,
+    Step1,
+    Step2,
+    Step1,
+    Step1,
+    Step2,
+    Step1,
+    Step1,
+    Step2,
+    Step1,
+};
+
 static const SpriteStepFunc sStep2Funcs[] = {
     Step2,
     Step2,
@@ -8466,6 +8530,12 @@ static const SpriteStepFunc sStep4Funcs[] = {
     Step4,
 };
 
+static const SpriteStepFunc sStep6Funcs[] = {
+    Step6,
+    Step4,
+    Step6,
+};
+
 static const SpriteStepFunc sStep8Funcs[] = {
     Step8,
     Step8,
@@ -8473,17 +8543,21 @@ static const SpriteStepFunc sStep8Funcs[] = {
 
 static const SpriteStepFunc *const sNpcStepFuncTables[] = {
     [MOVE_SPEED_NORMAL] = sStep1Funcs,
+    [MOVE_SPEED_NORMAL_2] = sStep1_5Funcs,
     [MOVE_SPEED_FAST_1] = sStep2Funcs,
     [MOVE_SPEED_FAST_2] = sStep3Funcs,
     [MOVE_SPEED_FASTER] = sStep4Funcs,
+    [MOVE_SPEED_FASTER_2] = sStep6Funcs,
     [MOVE_SPEED_FASTEST] = sStep8Funcs,
 };
 
 static const s16 sStepTimes[] = {
     [MOVE_SPEED_NORMAL] = ARRAY_COUNT(sStep1Funcs),
+    [MOVE_SPEED_NORMAL_2] = ARRAY_COUNT(sStep1_5Funcs),
     [MOVE_SPEED_FAST_1] = ARRAY_COUNT(sStep2Funcs),
     [MOVE_SPEED_FAST_2] = ARRAY_COUNT(sStep3Funcs),
     [MOVE_SPEED_FASTER] = ARRAY_COUNT(sStep4Funcs),
+    [MOVE_SPEED_FASTER_2] = ARRAY_COUNT(sStep6Funcs),
     [MOVE_SPEED_FASTEST] = ARRAY_COUNT(sStep8Funcs),
 };
 
