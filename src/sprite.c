@@ -412,7 +412,7 @@ void SortSprites(void)
 
         while (j > 0
             && ((sprite1Priority > sprite2Priority)
-             || (sprite1Priority == sprite2Priority && sprite1Y < sprite2Y)))
+             || (sprite1Priority == sprite2Priority && sprite1Y < sprite2Y)) && !sprite2->data[0])
         {
             u8 temp = sSpriteOrder[j];
             sSpriteOrder[j] = sSpriteOrder[j - 1];

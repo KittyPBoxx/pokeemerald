@@ -1287,3 +1287,35 @@ const struct SpriteTemplate gFieldEffectObjectTemplate_Rayquaza = {
 };
 
 static const struct SpritePalette sSpritePalette_Unused = {gObjectEventPal_Npc3, FLDEFF_PAL_TAG_UNKNOWN};
+
+static const struct SpriteFrameImage sPicTable_MayNormal_Normal[] = {
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 0),
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 1),
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 2),
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 3),
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 4),
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 5),
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 6),
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 7),
+    overworld_frame(gObjectEventPic_MayNormal_Normal, 2, 4, 8),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 0),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 1),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 2),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 3),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 4),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 5),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 6),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 7),
+    overworld_frame(gObjectEventPic_MayRunning, 2, 4, 8),
+};
+
+static const struct SpriteTemplate gFieldEffectIlluminatedPlayerTemplate =
+{
+    .tileTag = TAG_NONE,                     
+    .paletteTag = TAG_NONE,
+    .oam = &gObjectEventBaseOam_16x32,
+    .anims = sAnimTable_BrendanMayNormal,
+    .images = sPicTable_MayNormal_Normal,
+    .affineAnims = gDummySpriteAffineAnimTable,
+    .callback = SpriteCallbackDummy,
+};

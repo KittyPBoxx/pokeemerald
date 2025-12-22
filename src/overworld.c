@@ -66,6 +66,7 @@
 #include "constants/songs.h"
 #include "constants/trainer_hill.h"
 #include "constants/weather.h"
+#include "constants/rgb.h"
 
 struct CableClubPlayer
 {
@@ -1787,6 +1788,10 @@ static void VBlankCB_Field(void)
     ProcessSpriteCopyRequests();
     ScanlineEffect_InitHBlankDmaTransfer();
     FieldUpdateBgTilemapScroll();
+
+    CpuCopy16(gPlttBufferUnfaded, gPlttBufferFaded, PLTT_BUFFER_SIZE * sizeof(u16));
+    BlendPalettes(PALETTES_BG, 14, RGB_BLACK);
+
     TransferPlttBuffer();
     TransferTilesetAnimsBuffer();
 }

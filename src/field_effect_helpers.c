@@ -12,6 +12,8 @@
 #include "trig.h"
 #include "constants/field_effects.h"
 #include "constants/songs.h"
+#include "palette.h"
+#include "constants/rgb.h"
 
 #define OBJ_EVENT_PAL_TAG_NONE 0x11FF // duplicate of define in event_object_movement.c
 
@@ -1447,6 +1449,402 @@ void UpdateSparkleFieldEffect(struct Sprite *sprite)
 
 #undef sFinished
 #undef sEndTimer
+
+// Illumination
+
+#define sIlluminatedObjEventId data[0]
+#define sIlluminatedObjEventLocalId data[1]
+#define sLightObjEventId data[2]
+
+#define OBJ_EVENT_GFX_LIGHT_SOURCE 142
+#define OBJ_EVENT_GFX_CABLE_CAR2   114
+
+ALIGNED(4) const u16 sObjectEventPal_MayNormal[] = INCBIN_U16("graphics/object_events/palettes/may_normal.gbapal");
+ALIGNED(4) const u16 sObjectEventPal_May[] = INCBIN_U16("graphics/object_events/palettes/may.gbapal");
+
+ALIGNED(4) u16 gMayNormalPalBuf[16];
+ALIGNED(4) u16 gMayPalBuf[16];
+
+void SetUpIlluminated(struct ObjectEvent *objectEvent, struct Sprite *sprite, bool8 stillReflection)
+{
+    u8 illumId;
+    struct Sprite *illumSprite;
+    struct Sprite *mainSprite;
+    int i;
+
+    if (!objectEvent->isPlayer)
+        return;
+    if (objectEvent->isIlluminated)
+        return;
+
+    illumId = CreateSprite(gFieldEffectObjectTemplatePointers[FLDEFFOBJ_ILLUMINATE_PLAYER], sprite->x, sprite->y, 151);
+    if (illumId == MAX_SPRITES)
+        return;
+
+    illumSprite = &gSprites[illumId];
+    mainSprite  = &gSprites[objectEvent->spriteId];
+
+    /* standard setup */
+    illumSprite->callback = UpdateIlluminatedSprite;
+
+    LoadPalette(sObjectEventPal_MayNormal, OBJ_PLTT_ID(gReflectionEffectPaletteMap[illumSprite->oam.paletteNum]), PLTT_SIZE_4BPP);
+
+    illumSprite->oam.paletteNum = gReflectionEffectPaletteMap[illumSprite->oam.paletteNum];
+    illumSprite->affineAnims = gDummySpriteAffineAnimTable;
+    illumSprite->subspriteMode = SUBSPRITES_OFF;
+    illumSprite->sIlluminatedObjEventId = sprite->data[0];
+    illumSprite->sIlluminatedObjEventLocalId = objectEvent->localId;
+    objectEvent->isIlluminated = TRUE;
+
+    /* --- CRITICAL: initialize animation state to match the main sprite exactly ONCE --- */
+    illumSprite->anims            = mainSprite->anims;           // same script pointer
+    illumSprite->animNum          = mainSprite->animNum;         // same animation set
+    illumSprite->animCmdIndex     = mainSprite->animCmdIndex;    // command index
+    illumSprite->animDelayCounter = mainSprite->animDelayCounter;
+    illumSprite->animLoopCounter  = mainSprite->animLoopCounter;
+    illumSprite->animBeginning    = mainSprite->animBeginning;
+    illumSprite->animPaused       = mainSprite->animPaused;
+
+    /* ensure engine considers anim beginning so it can copy frame 0 if needed */
+    illumSprite->animBeginning = TRUE;
+
+    for (i = 0; i < OBJECT_EVENTS_COUNT; i++)
+    {
+        if (gObjectEvents[i].active && !gObjectEvents[i].invisible && gObjectEvents[i].graphicsId == OBJ_EVENT_GFX_LIGHT_SOURCE)  
+        {
+            illumSprite->sLightObjEventId = i;
+            break;
+        }
+    }
+
+    for (i = 0; i < OBJECT_EVENTS_COUNT; i++)
+    {
+        if (gObjectEvents[i].graphicsId == OBJ_EVENT_GFX_CABLE_CAR2)
+        {
+            gSprites[gObjectEvents[i].spriteId].data[0] = 1;
+            gObjectEvents[i].active = FALSE; 
+            break;
+        }
+    }
+
+    /* start anim processing for the sprite (let engine run its own code) */
+    StartSpriteAnim(illumSprite, illumSprite->animNum);
+}
+
+static u16 TintColor(u16 color, u16 tintColor, int coeff)
+{
+    int r, g, b;
+    int tr, tg, tb;
+    int tmp;
+
+    // clamp coeff to [0,16]
+    if (coeff < 0) coeff = 0;
+    if (coeff > 16) coeff = 16;
+
+    r  =  color        & 0x1F;
+    g  = (color >> 5 ) & 0x1F;
+    b  = (color >> 10) & 0x1F;
+
+    tr =  tintColor        & 0x1F;
+    tg = (tintColor >> 5 ) & 0x1F;
+    tb = (tintColor >> 10) & 0x1F;
+
+    /* out = orig + ((tint - orig) * coeff) / 16
+       using >>4 is fine because coeff is 0..16 and values are small */
+    tmp = (tr - r) * coeff;
+    r = r + (tmp >> 4);
+
+    tmp = (tg - g) * coeff;
+    g = g + (tmp >> 4);
+
+    tmp = (tb - b) * coeff;
+    b = b + (tmp >> 4);
+
+    return (u16)((b << 10) | (g << 5) | r);
+}
+
+void TintPalette(u16 *dst, const u16 *src, u16 tintColor, int coeff)
+{
+    int i;
+    for (i = 0; i < 16; i++)
+        dst[i] = TintColor(src[i], tintColor, coeff);
+}
+
+#define LIGHT_TILES      4
+#define LIGHT_RADIUS     (16 * LIGHT_TILES)
+#define LIGHT_SCALE16    ((16 * 256) / LIGHT_RADIUS) 
+
+
+static int ApproxDistance(int dx, int dy)
+{
+    int mn;
+    int mx;
+
+    // abs() without function
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+
+    mn = (dx < dy ? dx : dy);
+    mx = (dx > dy ? dx : dy);
+
+    // dist ≈ mx + mn*0.5
+    return mx + (mn >> 1);
+}
+
+static int GetLightCoeff(int sx, int sy, int lx, int ly)
+{
+    int scaled;
+    int dx = sx - lx;
+    int dy = sy - ly;
+    int dist = ApproxDistance(dx, dy);
+
+    if (dist >= LIGHT_RADIUS)
+        return 0;
+
+    scaled = LIGHT_RADIUS - dist;    // 0..48
+    return (scaled * LIGHT_SCALE16) >> 8; // 0..16
+}
+
+typedef struct {
+    s8 nx;
+    s8 ny;
+    s8 nz;
+} Normal3;
+
+const Normal3 gNormalTable[16] = {
+    {0,0,0},        /* 0 transparency */
+    { 0,  0, 64},   /* 1 center */
+
+    /* 3–10 : strong */
+    {-45, 45, 45},   /* 2 strong NW */
+    {  0, 45, 45},   /* 3 strong N */
+    { 45, 45, 45},   /* 4 strong NE */
+    {-45,  0, 45},   /* 5 strong W */
+    { 45,  0, 45},   /* 6 strong E */
+    {-45,-45, 45},   /* 7 strong SW */
+    {  0,-45, 45},   /* 8 strong S */
+    { 45,-45, 45},   /* 9 strong SE */
+
+    /* 11–16 : weak */
+    {-24, 36, 59},   /*10 weak N (west side) */
+    { 24, 36, 59},   /*11 weak N (east side) */
+    {-36,  0, 59},   /*12 weak W */
+    { 36,  0, 59},   /*13 weak E */
+    {-24,-36, 59},   /*14 weak S (west side) */
+    { 24,-36, 59},   /*15 weak S (east side) */
+};
+
+u16 TintNormal(u16 base, u16 light, int coeff)
+{
+    int br, bg, bb;
+    int lr, lg, lb;
+
+    /* GBA is RGB555, NOT 5/6/5 */
+    br =  base        & 0x1F;
+    bg = (base >>  5) & 0x1F;
+    bb = (base >> 10) & 0x1F;
+
+    lr =  light       & 0x1F;
+    lg = (light >>  5) & 0x1F;
+    lb = (light >> 10) & 0x1F;
+
+    /* tint = add scaled light color */
+    br += (lr * coeff) >> 3;
+    bg += (lg * coeff) >> 3;
+    bb += (lb * coeff) >> 3;
+
+    if (br > 31) br = 31;
+    if (bg > 31) bg = 31;
+    if (bb > 31) bb = 31;
+
+    return (u16)(br | (bg << 5) | (bb << 10));
+}
+
+
+int ComputeLightCoeffForNormal(int index,
+                               int spriteX, int spriteY,
+                               int lightX,  int lightY)
+{
+    int Lx, Ly, Lz;
+    int nx, ny, nz;
+    long dot;
+    int coeff;
+
+    /* Light vector from sprite → light */
+    Lx = lightX - spriteX;
+    Ly = lightY - spriteY;
+    Lz = 64;      /* constant depth component */
+
+    /* Clamp to avoid overflow */
+    if (Lx > 63)  Lx = 63;
+    if (Lx < -63) Lx = -63;
+    if (Ly > 63)  Ly = 63;
+    if (Ly < -63) Ly = -63;
+
+    /* Fetch normal */
+    nx = gNormalTable[index].nx;
+    ny = gNormalTable[index].ny;
+    nz = gNormalTable[index].nz;
+
+    /* Integer dot product */
+    dot = nx * Lx + ny * Ly + nz * Lz;
+
+    if (dot < 0)
+        dot = 0;
+
+    /* Scale to 0..8 (TintPalette expects 0..8) */
+    coeff = (int)(dot >> 8);   /* divide by 256 */
+    if (coeff > 8)
+        coeff = 8;
+
+    return coeff;
+}
+
+int ComputeLightCoeffForNormal2(int index,
+                               int spriteX, int spriteY,
+                               int lightX,  int lightY,
+                               int hFlip)
+{
+    int Lx, Ly, Lz;
+    int nx, ny, nz;
+    long dot;
+    int angleCoeff;
+    int distCoeff;
+    int finalCoeff;
+    int dx, dy;
+    int dist;
+
+    /* light vector */
+    Lx = lightX - spriteX;
+    Ly = lightY - spriteY;
+    Lz = 24; /* reduced Z for better lateral influence */
+
+    /* clamp */
+    if (Lx > 63)  Lx = 63;
+    if (Lx < -63) Lx = -63;
+    if (Ly > 63)  Ly = 63;
+    if (Ly < -63) Ly = -63;
+
+    /* fetch normal */
+    nx = gNormalTable[index].nx;
+    ny = gNormalTable[index].ny;
+    nz = gNormalTable[index].nz;
+    
+
+    /* 3D dot product */
+    dot = nx * Lx + ny * Ly + nz * Lz;
+
+    if (dot <= 0)
+        return 0;
+
+    angleCoeff = (int)(dot >> 8);
+    if (angleCoeff > 8) angleCoeff = 8;
+
+    /* approximate distance */
+    dx = spriteX - lightX;
+    dy = spriteY - lightY;
+    dist = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+
+    if (dist >= LIGHT_RADIUS)
+        return 0;
+
+    distCoeff = ((LIGHT_RADIUS - dist) * LIGHT_SCALE16) >> 8;
+
+    finalCoeff = (angleCoeff * distCoeff + 8) >> 4;
+    if (finalCoeff < 0) finalCoeff = 0;
+    if (finalCoeff > 8) finalCoeff = 8;
+
+    return finalCoeff;
+}
+
+
+#define SOURCE_WIDTH_OFFSET (16 / 2)
+#define SOURCE_HEIGHT_OFFSET (16 / 2)
+#define MAIN_WIDTH_OFFSET (16 / 2)
+#define MAIN_HEIGHT_OFFSET (32 / 2)
+
+
+void UpdateIlluminatedSprite(struct Sprite *illumSprite)
+{
+    struct ObjectEvent *objectEvent;
+    struct Sprite *mainSprite;
+    struct ObjectEvent *lightObjectEvent;
+    struct Sprite *light;
+    u8 mainAnimNum;
+    //int coeff;
+    int i;
+    int coeff_i;
+
+    objectEvent = &gObjectEvents[illumSprite->sIlluminatedObjEventId];
+    mainSprite  = &gSprites[objectEvent->spriteId];
+
+    lightObjectEvent = &gObjectEvents[illumSprite->sLightObjEventId];
+    light = &gSprites[lightObjectEvent->spriteId];
+
+    if (!objectEvent->active || objectEvent->localId != illumSprite->sIlluminatedObjEventLocalId)
+    {
+        objectEvent->isIlluminated = FALSE;
+        illumSprite->inUse = FALSE;
+        return;
+    }
+
+    //coeff = GetLightCoeff(mainSprite->x + MAIN_WIDTH_OFFSET, mainSprite->y + MAIN_HEIGHT_OFFSET, light->x + SOURCE_WIDTH_OFFSET, light->y + SOURCE_HEIGHT_OFFSET);
+
+    // memcpy(gMayPalBuf, sObjectEventPal_May, sizeof(gMayPalBuf));
+    // TintPalette(gMayPalBuf, sObjectEventPal_May, RGB(31,20,5), coeff >> 2);
+    // LoadPalette(gMayPalBuf, OBJ_PLTT_ID(mainSprite->oam.paletteNum), PLTT_SIZE_4BPP);
+
+    memcpy(gMayNormalPalBuf, sObjectEventPal_MayNormal, sizeof(gMayNormalPalBuf));
+    for (i = 2; i <= 16; i++)
+    {
+        coeff_i = ComputeLightCoeffForNormal2(i, mainSprite->x + MAIN_WIDTH_OFFSET, mainSprite->y + MAIN_HEIGHT_OFFSET, light->x + SOURCE_WIDTH_OFFSET, light->y + SOURCE_HEIGHT_OFFSET,  mainSprite->hFlip); 
+        //gMayNormalPalBuf[i] = TintNormal(sObjectEventPal_MayNormal[i], RGB(31,20,5), (coeff_i * coeff) >> 4);
+        gMayNormalPalBuf[i] = TintNormal(sObjectEventPal_MayNormal[i], RGB(31,20,5), coeff_i);
+    }
+    LoadPalette(gMayNormalPalBuf, OBJ_PLTT_ID(gReflectionEffectPaletteMap[illumSprite->oam.paletteNum]), PLTT_SIZE_4BPP);
+
+    /* flicker priority (your behavior) */
+    illumSprite->oam.priority = (gMain.vblankCounter1 & 1) ? 3 : 0;
+
+    /* copy immutable OAM fields (shape/size/matrix) but never tileNum */
+    illumSprite->oam.shape     = mainSprite->oam.shape;
+    illumSprite->oam.size      = mainSprite->oam.size;
+    illumSprite->oam.matrixNum = mainSprite->oam.matrixNum;
+
+    /* --- ANIMATION SYNC: only react when the animation *sequence* changes --- */
+    mainAnimNum = mainSprite->animNum;
+    if (illumSprite->animNum != mainAnimNum)
+    {
+        /* StartSpriteAnim will reset the clone's counters into a correct starting state.
+           This call must be made when the player actually changes animation sequence. */
+        StartSpriteAnim(illumSprite, mainAnimNum);
+
+        /* Copy the current command index/delay so the clone starts at the same offset as the player.
+           *This is done once at the moment the sequence changes, not every frame.* */
+        illumSprite->animCmdIndex     = mainSprite->animCmdIndex;
+        illumSprite->animDelayCounter = mainSprite->animDelayCounter;
+        illumSprite->animLoopCounter  = mainSprite->animLoopCounter;
+        illumSprite->animBeginning    = mainSprite->animBeginning;
+        //illumSprite->animPaused       = mainSprite->animPaused;
+    }
+
+    /* Keep paused state synced if you want exact pause behavior (optional) */
+    illumSprite->animPaused = mainSprite->animPaused;
+
+    /* POSITION and VISIBILITY */
+    illumSprite->x = mainSprite->x;
+    illumSprite->y = mainSprite->y;
+    illumSprite->x2 = mainSprite->x2;
+    illumSprite->y2 = mainSprite->y2;
+    illumSprite->centerToCornerVecX = mainSprite->centerToCornerVecX;
+    illumSprite->centerToCornerVecY = mainSprite->centerToCornerVecY;
+    illumSprite->coordOffsetEnabled = mainSprite->coordOffsetEnabled;
+    illumSprite->invisible = mainSprite->invisible;
+}
+
+
+#undef sIlluminatedObjEventId
+#undef sIlluminatedObjEventLocalId
 
 #define sTimer       data[0]
 #define sMoveTimer   data[1]
