@@ -303,13 +303,40 @@ static void DrawMetatile(s32 metatileLayerType, const u16 *tiles, u16 offset)
     ScheduleBgCopyTilemapToVram(3);
 }
 
+static const struct MapOverlayTiles *FindOverlayTile(int x, int y)
+{
+    const struct MapOverlayTiles *tiles = gMapHeader.overlay->overlayTiles;
+    s32 low = 0;
+    s32 high = (s32)gMapHeader.overlay->overlayTileCount - 1;
+
+    while (low <= high)
+    {
+        s32 mid = (low + high) >> 1;
+        int midx = tiles[mid].x;
+        int midy = tiles[mid].y;
+
+        if (midx < x || (midx == x && midy < y))
+        {
+            low = mid + 1;
+        }
+        else if (midx > x || (midx == x && midy > y))
+        {
+            high = mid - 1;
+        }
+        else
+        {
+            return &tiles[mid];
+        }
+    }
+
+    return NULL;
+}
+
 static void DrawMetatileForOverlay(s32 metatileLayerType, const u16 *tiles, u16 offset, int x, int y)
 {
-    u16 i = 0;
     u16 topTileId = 0;
     const u16 *ovTiles = NULL;
-    int ox = 0;
-    int oy = 0;
+    const struct MapOverlayTiles *overlayTile;
 
     switch (metatileLayerType)
     {
@@ -415,39 +442,26 @@ static void DrawMetatileForOverlay(s32 metatileLayerType, const u16 *tiles, u16 
             break;
     }
 
-    for (i = 0; i < gMapHeader.overlay->overlayTileCount; i++)
+    overlayTile = FindOverlayTile(x, y);
+    if (overlayTile != NULL)
     {
-        ox = gMapHeader.overlay->overlayTiles[i].x;
-        oy = gMapHeader.overlay->overlayTiles[i].y;
+        topTileId = overlayTile->topTileId;
 
-        if (ox > x)   // early exit because tiles sorted by X then Y in the generator
-            break;
-
-        if (ox == x && oy == y)
+        if (topTileId < NUM_METATILES_IN_PRIMARY)
         {
-            topTileId = gMapHeader.overlay->overlayTiles[i].topTileId;
-
-
-            if (topTileId < NUM_METATILES_IN_PRIMARY)
-            {
-                ovTiles = gMapHeader.mapLayout->primaryTileset->metatiles
-                            + topTileId * NUM_TILES_PER_METATILE;
-            }
-            else
-            {
-                topTileId -= NUM_METATILES_IN_PRIMARY;
-                ovTiles = gMapHeader.mapLayout->secondaryTileset->metatiles
-                            + topTileId * NUM_TILES_PER_METATILE;
-            }
-
-            // Replace only the *top layer* (indices 8–11 → BG1)
-            gOverworldTilemapBuffer_Bg1[offset]         = ovTiles[8];
-            gOverworldTilemapBuffer_Bg1[offset + 1]     = ovTiles[9];
-            gOverworldTilemapBuffer_Bg1[offset + 0x20]  = ovTiles[10];
-            gOverworldTilemapBuffer_Bg1[offset + 0x21]  = ovTiles[11];
-
-            break; // Found match, nothing more to do
+            ovTiles = gMapHeader.mapLayout->primaryTileset->metatiles + topTileId * NUM_TILES_PER_METATILE;
         }
+        else
+        {
+            topTileId -= NUM_METATILES_IN_PRIMARY;
+            ovTiles = gMapHeader.mapLayout->secondaryTileset->metatiles + topTileId * NUM_TILES_PER_METATILE;
+        }
+
+        // Replace only the *top layer* (indices 8–11 → BG1)
+        gOverworldTilemapBuffer_Bg1[offset]         = ovTiles[8];
+        gOverworldTilemapBuffer_Bg1[offset + 1]     = ovTiles[9];
+        gOverworldTilemapBuffer_Bg1[offset + 0x20]  = ovTiles[10];
+        gOverworldTilemapBuffer_Bg1[offset + 0x21]  = ovTiles[11];
     }
     ScheduleBgCopyTilemapToVram(1);
     ScheduleBgCopyTilemapToVram(2);
